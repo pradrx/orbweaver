@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Orbweaver infrastructure stack.
+  Manages all AWS resources for the distributed web crawler.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment environment.
+
+  URLQueueVisibilityTimeout:
+    Type: Number
+    Default: 300
+    Description: >
+      Visibility timeout in seconds for the URL queue.
+      Should be at least as long as the crawl worker's
+      maximum processing time.
+
+  MaxReceiveCount:
+    Type: Number
+    Default: 3
+    Description: >
+      Number of times a message can be received from the URL queue
+      before being sent to the dead-letter queue.
+
+  MessageRetentionPeriod:
+    Type: Number
+    Default: 1209600
+    Description: >
+      Message retention period in seconds (default 14 days).
+
+Resources:
+  URLDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "orbweaver-url-dlq-${Environment}"
+      MessageRetentionPeriod: !Ref MessageRetentionPeriod
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  URLQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "orbweaver-url-queue-${Environment}"
+      VisibilityTimeout: !Ref URLQueueVisibilityTimeout
+      MessageRetentionPeriod: !Ref MessageRetentionPeriod
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt URLDeadLetterQueue.Arn
+        maxReceiveCount: !Ref MaxReceiveCount
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  URLQueueURL:
+    Description: URL of the URL queue.
+    Value: !Ref URLQueue
+    Export:
+      Name: !Sub "orbweaver-url-queue-url-${Environment}"
+
+  URLQueueArn:
+    Description: ARN of the URL queue.
+    Value: !GetAtt URLQueue.Arn
+    Export:
+      Name: !Sub "orbweaver-url-queue-arn-${Environment}"
+
+  URLDeadLetterQueueURL:
+    Description: URL of the URL dead-letter queue.
+    Value: !Ref URLDeadLetterQueue
+    Export:
+      Name: !Sub "orbweaver-url-dlq-url-${Environment}"
+
+  URLDeadLetterQueueArn:
+    Description: ARN of the URL dead-letter queue.
+    Value: !GetAtt URLDeadLetterQueue.Arn
+    Export:
+      Name: !Sub "orbweaver-url-dlq-arn-${Environment}"
