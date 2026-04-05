@@ -1,0 +1,5 @@
+https://books.toscrape.com/
+https://quotes.toscrape.com/
+https://www.scrapethissite.com/
+https://crawler-test.com/
+https://data.gov/
