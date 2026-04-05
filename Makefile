@@ -1,9 +1,10 @@
 BINDIR := bin
 
-.PHONY: build clean seed crawl deploy
+.PHONY: build clean seed crawl parser deploy
 
 build:
 	go build -o $(BINDIR)/crawler ./cmd/crawler
+	go build -o $(BINDIR)/parser ./cmd/parser
 	go build -o $(BINDIR)/seed ./cmd/seed
 
 seed: build
@@ -11,6 +12,9 @@ seed: build
 
 crawl: build
 	./$(BINDIR)/crawler
+
+parser: build
+	./$(BINDIR)/parser
 
 deploy:
 	aws cloudformation deploy \
