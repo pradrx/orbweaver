@@ -1,6 +1,6 @@
 BINDIR := bin
 
-.PHONY: build clean seed crawl
+.PHONY: build clean seed crawl deploy
 
 build:
 	go build -o $(BINDIR)/crawler ./cmd/crawler
@@ -11,6 +11,12 @@ seed: build
 
 crawl: build
 	./$(BINDIR)/crawler
+
+deploy:
+	aws cloudformation deploy \
+		--template-file infra/cloudformation.yaml \
+		--stack-name orbweaver \
+		--parameter-overrides Environment=$(or $(ENV),dev)
 
 clean:
 	rm -rf $(BINDIR)/*

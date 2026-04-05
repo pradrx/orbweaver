@@ -21,6 +21,14 @@ Parameters:
       Should be at least as long as the crawl worker's
       maximum processing time.
 
+  ParserQueueVisibilityTimeout:
+    Type: Number
+    Default: 300
+    Description: >
+      Visibility timeout in seconds for the parser queue.
+      Should be at least as long as the parser worker's
+      maximum processing time.
+
   MaxReceiveCount:
     Type: Number
     Default: 3
@@ -40,6 +48,32 @@ Resources:
     Properties:
       QueueName: !Sub "orbweaver-url-dlq-${Environment}"
       MessageRetentionPeriod: !Ref MessageRetentionPeriod
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  ParserDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "orbweaver-parser-dlq-${Environment}"
+      MessageRetentionPeriod: !Ref MessageRetentionPeriod
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  ParserQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "orbweaver-parser-queue-${Environment}"
+      VisibilityTimeout: !Ref ParserQueueVisibilityTimeout
+      MessageRetentionPeriod: !Ref MessageRetentionPeriod
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ParserDeadLetterQueue.Arn
+        maxReceiveCount: !Ref MaxReceiveCount
       Tags:
         - Key: Project
           Value: orbweaver
@@ -85,3 +119,27 @@ Outputs:
     Value: !GetAtt URLDeadLetterQueue.Arn
     Export:
       Name: !Sub "orbweaver-url-dlq-arn-${Environment}"
+
+  ParserQueueURL:
+    Description: URL of the parser queue.
+    Value: !Ref ParserQueue
+    Export:
+      Name: !Sub "orbweaver-parser-queue-url-${Environment}"
+
+  ParserQueueArn:
+    Description: ARN of the parser queue.
+    Value: !GetAtt ParserQueue.Arn
+    Export:
+      Name: !Sub "orbweaver-parser-queue-arn-${Environment}"
+
+  ParserDeadLetterQueueURL:
+    Description: URL of the parser dead-letter queue.
+    Value: !Ref ParserDeadLetterQueue
+    Export:
+      Name: !Sub "orbweaver-parser-dlq-url-${Environment}"
+
+  ParserDeadLetterQueueArn:
+    Description: ARN of the parser dead-letter queue.
+    Value: !GetAtt ParserDeadLetterQueue.Arn
+    Export:
+      Name: !Sub "orbweaver-parser-dlq-arn-${Environment}"
