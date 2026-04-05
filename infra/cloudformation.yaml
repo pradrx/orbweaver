@@ -80,6 +80,16 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  HTMLStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "orbweaver-html-storage-${Environment}"
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
   URLQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -143,3 +153,15 @@ Outputs:
     Value: !GetAtt ParserDeadLetterQueue.Arn
     Export:
       Name: !Sub "orbweaver-parser-dlq-arn-${Environment}"
+
+  HTMLStorageBucketName:
+    Description: Name of the HTML storage S3 bucket.
+    Value: !Ref HTMLStorageBucket
+    Export:
+      Name: !Sub "orbweaver-html-storage-bucket-name-${Environment}"
+
+  HTMLStorageBucketArn:
+    Description: ARN of the HTML storage S3 bucket.
+    Value: !GetAtt HTMLStorageBucket.Arn
+    Export:
+      Name: !Sub "orbweaver-html-storage-bucket-arn-${Environment}"
