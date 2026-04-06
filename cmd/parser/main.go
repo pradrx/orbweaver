@@ -138,15 +138,13 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 	parsedKey := "parsed/ds=" + ds + "/" + hex.EncodeToString(hash[:]) + ".json"
 
 	parsedDoc, err := json.Marshal(struct {
-		URL       string   `json:"url"`
-		Text      string   `json:"text"`
-		Links     []string `json:"links"`
-		SourceKey string   `json:"source_key"`
-		ParsedAt  string   `json:"parsed_at"`
+		URL       string `json:"url"`
+		Text      string `json:"text"`
+		SourceKey string `json:"source_key"`
+		ParsedAt  string `json:"parsed_at"`
 	}{
 		URL:       payload.URL,
 		Text:      text,
-		Links:     links,
 		SourceKey: payload.S3Key,
 		ParsedAt:  time.Now().UTC().Format(time.RFC3339),
 	})
