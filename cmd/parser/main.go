@@ -13,7 +13,9 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -40,6 +42,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	workerCount := 10
+	if v := os.Getenv("WORKER_COUNT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			fmt.Fprintf(os.Stderr, "WORKER_COUNT must be a positive integer\n")
+			os.Exit(1)
+		}
+		workerCount = n
+	}
+
 	logLevel := slog.LevelInfo
 	if *verbose {
 		logLevel = slog.LevelDebug
@@ -59,12 +71,26 @@ func main() {
 	sqsClient := sqs.NewFromConfig(cfg)
 	s3Client := s3.NewFromConfig(cfg)
 
-	slog.Info("parser starting", "queue_url", queueURL, "s3_bucket", s3Bucket)
-	poll(ctx, sqsClient, s3Client, queueURL, s3Bucket)
+	slog.Info("parser starting", "queue_url", queueURL, "s3_bucket", s3Bucket, "workers", workerCount)
+	run(ctx, sqsClient, s3Client, queueURL, s3Bucket, workerCount)
 	slog.Info("parser shut down")
 }
 
-func poll(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, queueURL, s3Bucket string) {
+func run(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, queueURL, s3Bucket string, workerCount int) {
+	var wg sync.WaitGroup
+	for i := range workerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slog.Info("worker started", "worker_id", i)
+			poll(ctx, sqsClient, s3Client, queueURL, s3Bucket, i)
+			slog.Info("worker stopped", "worker_id", i)
+		}()
+	}
+	wg.Wait()
+}
+
+func poll(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, queueURL, s3Bucket string, workerID int) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -81,18 +107,18 @@ func poll(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, queue
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Error("failed to receive messages", "error", err)
+			slog.Error("failed to receive messages", "error", err, "worker_id", workerID)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
 		for _, msg := range msgs.Messages {
-			processMessage(ctx, sqsClient, s3Client, queueURL, s3Bucket, msg)
+			processMessage(ctx, sqsClient, s3Client, queueURL, s3Bucket, msg, workerID)
 		}
 	}
 }
 
-func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, queueURL, s3Bucket string, msg types.Message) {
+func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, queueURL, s3Bucket string, msg types.Message, workerID int) {
 	var payload struct {
 		URL   string `json:"url"`
 		S3Key string `json:"s3_key"`
@@ -109,7 +135,7 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 		return
 	}
 
-	slog.Info("processing", "url", payload.URL, "s3_key", payload.S3Key, "message_id", *msg.MessageId)
+	slog.Info("processing", "url", payload.URL, "s3_key", payload.S3Key, "message_id", *msg.MessageId, "worker_id", workerID)
 
 	obj, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s3Bucket,
@@ -165,7 +191,7 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 		return
 	}
 
-	slog.Info("processed", "url", payload.URL, "s3_key", payload.S3Key, "parsed_key", parsedKey, "text_length", len(text), "link_count", len(links), "message_id", *msg.MessageId)
+	slog.Info("processed", "url", payload.URL, "s3_key", payload.S3Key, "parsed_key", parsedKey, "text_length", len(text), "link_count", len(links), "message_id", *msg.MessageId, "worker_id", workerID)
 
 	deleteMessage(ctx, sqsClient, queueURL, msg)
 }
