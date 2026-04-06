@@ -172,6 +172,18 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 	deleteMessage(ctx, sqsClient, queueURL, msg)
 }
 
+var skipTags = map[string]bool{
+	"script":   true,
+	"style":    true,
+	"noscript": true,
+	"nav":      true,
+	"header":   true,
+	"footer":   true,
+	"aside":    true,
+	"menu":     true,
+	"form":     true,
+}
+
 func extractText(body io.Reader) string {
 	z := html.NewTokenizer(body)
 	var b strings.Builder
@@ -185,15 +197,13 @@ func extractText(body io.Reader) string {
 
 		case html.StartTagToken:
 			tn, _ := z.TagName()
-			tag := string(tn)
-			if tag == "script" || tag == "style" || tag == "noscript" {
+			if skipTags[string(tn)] {
 				skip++
 			}
 
 		case html.EndTagToken:
 			tn, _ := z.TagName()
-			tag := string(tn)
-			if (tag == "script" || tag == "style" || tag == "noscript") && skip > 0 {
+			if skipTags[string(tn)] && skip > 0 {
 				skip--
 			}
 
