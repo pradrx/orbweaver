@@ -1,6 +1,6 @@
 BINDIR := bin
 
-.PHONY: build clean seed crawl parser deploy
+.PHONY: build clean seed crawler parser deploy
 
 build:
 	go build -o $(BINDIR)/crawler ./cmd/crawler
@@ -10,7 +10,7 @@ build:
 seed: build
 	./$(BINDIR)/seed
 
-crawl: build
+crawler: build
 	./$(BINDIR)/crawler
 
 parser: build

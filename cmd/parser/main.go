@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -130,7 +132,42 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 
 	slog.Debug("extracted text", "url", payload.URL, "text_length", len(text), "text", text)
 	slog.Info("extracted links", "url", payload.URL, "link_count", len(links), "links", links)
-	slog.Info("processed", "url", payload.URL, "s3_key", payload.S3Key, "text_length", len(text), "link_count", len(links), "message_id", *msg.MessageId)
+
+	ds := time.Now().UTC().Format("2006-01-02")
+	hash := sha256.Sum256([]byte(payload.URL))
+	parsedKey := "parsed/ds=" + ds + "/" + hex.EncodeToString(hash[:]) + ".json"
+
+	parsedDoc, err := json.Marshal(struct {
+		URL       string   `json:"url"`
+		Text      string   `json:"text"`
+		Links     []string `json:"links"`
+		SourceKey string   `json:"source_key"`
+		ParsedAt  string   `json:"parsed_at"`
+	}{
+		URL:       payload.URL,
+		Text:      text,
+		Links:     links,
+		SourceKey: payload.S3Key,
+		ParsedAt:  time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		slog.Error("failed to marshal parsed document", "url", payload.URL, "error", err)
+		return
+	}
+
+	parsedContentType := "application/json"
+	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      &s3Bucket,
+		Key:         &parsedKey,
+		Body:        bytes.NewReader(parsedDoc),
+		ContentType: &parsedContentType,
+	})
+	if err != nil {
+		slog.Error("s3 upload of parsed text failed", "url", payload.URL, "s3_key", parsedKey, "error", err)
+		return
+	}
+
+	slog.Info("processed", "url", payload.URL, "s3_key", payload.S3Key, "parsed_key", parsedKey, "text_length", len(text), "link_count", len(links), "message_id", *msg.MessageId)
 
 	deleteMessage(ctx, sqsClient, queueURL, msg)
 }
