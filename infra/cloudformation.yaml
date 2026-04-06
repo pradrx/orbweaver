@@ -42,6 +42,31 @@ Parameters:
     Description: >
       Message retention period in seconds (default 14 days).
 
+  VpcCIDR:
+    Type: String
+    Default: "10.0.0.0/16"
+    Description: CIDR block for the VPC.
+
+  PrivateSubnet1CIDR:
+    Type: String
+    Default: "10.0.1.0/24"
+    Description: CIDR block for private subnet 1.
+
+  PrivateSubnet2CIDR:
+    Type: String
+    Default: "10.0.2.0/24"
+    Description: CIDR block for private subnet 2.
+
+  RedisNodeType:
+    Type: String
+    Default: cache.t3.micro
+    Description: ElastiCache instance type for Redis.
+
+  RedisPort:
+    Type: Number
+    Default: 6379
+    Description: Port for the Redis cluster.
+
 Resources:
   URLDeadLetterQueue:
     Type: AWS::SQS::Queue
@@ -89,6 +114,94 @@ Resources:
           Value: orbweaver
         - Key: Environment
           Value: !Ref Environment
+
+  # --- VPC & Networking ---
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  # --- ElastiCache ---
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Redis access from within the VPC
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref RedisPort
+          ToPort: !Ref RedisPort
+          CidrIp: !Ref VpcCIDR
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: Subnet group for Orbweaver Redis
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: !Sub "orbweaver-redis-${Environment}"
+      Engine: redis
+      CacheNodeType: !Ref RedisNodeType
+      NumCacheNodes: 1
+      Port: !Ref RedisPort
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - !GetAtt RedisSecurityGroup.GroupId
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  # --- SQS Queues ---
 
   URLQueue:
     Type: AWS::SQS::Queue
@@ -165,3 +278,33 @@ Outputs:
     Value: !GetAtt HTMLStorageBucket.Arn
     Export:
       Name: !Sub "orbweaver-html-storage-bucket-arn-${Environment}"
+
+  VpcId:
+    Description: VPC ID.
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "orbweaver-vpc-id-${Environment}"
+
+  PrivateSubnet1Id:
+    Description: Private subnet 1 ID.
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub "orbweaver-private-subnet-1-id-${Environment}"
+
+  PrivateSubnet2Id:
+    Description: Private subnet 2 ID.
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "orbweaver-private-subnet-2-id-${Environment}"
+
+  RedisEndpoint:
+    Description: Endpoint address of the Redis cluster.
+    Value: !GetAtt RedisCluster.RedisEndpoint.Address
+    Export:
+      Name: !Sub "orbweaver-redis-endpoint-${Environment}"
+
+  RedisPort:
+    Description: Port of the Redis cluster.
+    Value: !GetAtt RedisCluster.RedisEndpoint.Port
+    Export:
+      Name: !Sub "orbweaver-redis-port-${Environment}"
