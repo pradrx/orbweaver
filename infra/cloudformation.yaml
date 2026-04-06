@@ -317,6 +317,68 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # --- ECR Repositories ---
+
+  CrawlerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: orbweaver-crawler
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 30 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 30
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
+  ParserRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: orbweaver-parser
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 30 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 30
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: orbweaver
+        - Key: Environment
+          Value: !Ref Environment
+
   # --- SQS Queues ---
 
   URLQueue:
@@ -442,3 +504,27 @@ Outputs:
     Value: !Ref InternetGateway
     Export:
       Name: !Sub "orbweaver-internet-gateway-id-${Environment}"
+
+  CrawlerRepositoryUri:
+    Description: URI of the crawler ECR repository.
+    Value: !GetAtt CrawlerRepository.RepositoryUri
+    Export:
+      Name: !Sub "orbweaver-crawler-repo-uri-${Environment}"
+
+  CrawlerRepositoryArn:
+    Description: ARN of the crawler ECR repository.
+    Value: !GetAtt CrawlerRepository.Arn
+    Export:
+      Name: !Sub "orbweaver-crawler-repo-arn-${Environment}"
+
+  ParserRepositoryUri:
+    Description: URI of the parser ECR repository.
+    Value: !GetAtt ParserRepository.RepositoryUri
+    Export:
+      Name: !Sub "orbweaver-parser-repo-uri-${Environment}"
+
+  ParserRepositoryArn:
+    Description: ARN of the parser ECR repository.
+    Value: !GetAtt ParserRepository.Arn
+    Export:
+      Name: !Sub "orbweaver-parser-repo-arn-${Environment}"
