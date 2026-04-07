@@ -23,14 +23,15 @@ deploy:
 	aws cloudformation deploy \
 		--template-file infra/cloudformation.yaml \
 		--stack-name orbweaver \
-		--parameter-overrides Environment=$(or $(ENV),dev)
+		--parameter-overrides Environment=$(or $(ENV),dev) \
+		--capabilities CAPABILITY_NAMED_IAM
 
 ecr-login:
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(ECR_URI)
 
 docker-build:
-	docker build -f docker/crawler.Dockerfile -t orbweaver-crawler .
-	docker build -f docker/parser.Dockerfile -t orbweaver-parser .
+	docker build --platform linux/amd64 -f docker/crawler.Dockerfile -t orbweaver-crawler .
+	docker build --platform linux/amd64 -f docker/parser.Dockerfile -t orbweaver-parser .
 
 docker-push: docker-build
 	docker tag orbweaver-crawler:latest $(ECR_URI)/orbweaver-crawler:latest

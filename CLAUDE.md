@@ -46,5 +46,6 @@ go build ./cmd/parser
 aws cloudformation deploy \
   --template-file infra/cloudformation.yaml \
   --stack-name orbweaver \
-  --parameter-overrides Environment=dev
+  --parameter-overrides Environment=dev \
+  --capabilities CAPABILITY_NAMED_IAM
 ```
