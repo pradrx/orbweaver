@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -22,6 +24,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	redis_rate "github.com/go-redis/redis_rate/v10"
+	"github.com/redis/go-redis/v9"
 )
 
 const maxBodySize = 5 * 1024 * 1024 // 5 MB
@@ -55,6 +59,18 @@ func main() {
 		workerCount = n
 	}
 
+	redisEndpoint := os.Getenv("REDIS_ENDPOINT")
+
+	rateLimitPerSecond := 1
+	if v := os.Getenv("RATE_LIMIT_PER_SECOND"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			fmt.Fprintf(os.Stderr, "RATE_LIMIT_PER_SECOND must be a positive integer\n")
+			os.Exit(1)
+		}
+		rateLimitPerSecond = n
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
@@ -71,31 +87,47 @@ func main() {
 	s3Client := s3.NewFromConfig(cfg)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
+	var limiter *redis_rate.Limiter
+	if redisEndpoint != "" {
+		rdb := redis.NewClient(&redis.Options{
+			Addr:         redisEndpoint,
+			ReadTimeout:  2 * time.Second,
+			WriteTimeout: 2 * time.Second,
+			DialTimeout:  3 * time.Second,
+		})
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			slog.Warn("redis not reachable, rate limiting disabled", "endpoint", redisEndpoint, "error", err)
+		} else {
+			limiter = redis_rate.NewLimiter(rdb)
+			slog.Info("rate limiter enabled", "endpoint", redisEndpoint, "rate_per_second", rateLimitPerSecond)
+		}
+	}
+
 	slog.Info("crawler starting",
 		"queue_url", queueURL,
 		"parser_queue_url", parserQueueURL,
 		"s3_bucket", s3Bucket,
 		"workers", workerCount,
 	)
-	run(ctx, sqsClient, s3Client, httpClient, queueURL, parserQueueURL, s3Bucket, workerCount)
+	run(ctx, sqsClient, s3Client, httpClient, queueURL, parserQueueURL, s3Bucket, workerCount, limiter, rateLimitPerSecond)
 	slog.Info("crawler shut down")
 }
 
-func run(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, httpClient *http.Client, queueURL, parserQueueURL, s3Bucket string, workerCount int) {
+func run(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, httpClient *http.Client, queueURL, parserQueueURL, s3Bucket string, workerCount int, limiter *redis_rate.Limiter, rateLimitPerSecond int) {
 	var wg sync.WaitGroup
 	for i := range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			slog.Info("worker started", "worker_id", i)
-			poll(ctx, sqsClient, s3Client, httpClient, queueURL, parserQueueURL, s3Bucket, i)
+			poll(ctx, sqsClient, s3Client, httpClient, queueURL, parserQueueURL, s3Bucket, i, limiter, rateLimitPerSecond)
 			slog.Info("worker stopped", "worker_id", i)
 		}()
 	}
 	wg.Wait()
 }
 
-func poll(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, httpClient *http.Client, queueURL, parserQueueURL, s3Bucket string, workerID int) {
+func poll(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, httpClient *http.Client, queueURL, parserQueueURL, s3Bucket string, workerID int, limiter *redis_rate.Limiter, rateLimitPerSecond int) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -107,6 +139,9 @@ func poll(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, httpC
 			QueueUrl:            &queueURL,
 			MaxNumberOfMessages: 10,
 			WaitTimeSeconds:     20,
+			MessageSystemAttributeNames: []types.MessageSystemAttributeName{
+				types.MessageSystemAttributeNameApproximateReceiveCount,
+			},
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -118,34 +153,57 @@ func poll(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, httpC
 		}
 
 		for _, msg := range msgs.Messages {
-			processMessage(ctx, sqsClient, s3Client, httpClient, queueURL, parserQueueURL, s3Bucket, msg, workerID)
+			processMessage(ctx, sqsClient, s3Client, httpClient, queueURL, parserQueueURL, s3Bucket, msg, workerID, limiter, rateLimitPerSecond)
 		}
 	}
 }
 
-func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, httpClient *http.Client, queueURL, parserQueueURL, s3Bucket string, msg types.Message, workerID int) {
-	url := ""
+func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Client, httpClient *http.Client, queueURL, parserQueueURL, s3Bucket string, msg types.Message, workerID int, limiter *redis_rate.Limiter, rateLimitPerSecond int) {
+	rawURL := ""
 	if msg.Body != nil {
-		url = *msg.Body
+		rawURL = *msg.Body
 	}
-	if url == "" {
+	if rawURL == "" {
 		slog.Warn("skipping message with empty body", "message_id", *msg.MessageId)
 		deleteMessage(ctx, sqsClient, queueURL, msg)
 		return
 	}
 
-	slog.Info("fetching", "url", url, "message_id", *msg.MessageId, "worker_id", workerID)
+	if limiter != nil {
+		domain, err := extractDomain(rawURL)
+		if err != nil {
+			slog.Warn("failed to parse domain, skipping rate limit", "url", rawURL, "error", err, "worker_id", workerID)
+		} else {
+			res, err := limiter.Allow(ctx, "crawl:"+domain, redis_rate.PerSecond(rateLimitPerSecond))
+			if err != nil {
+				slog.Warn("rate limiter error, allowing request", "domain", domain, "url", rawURL, "error", err, "worker_id", workerID)
+			} else if res.Allowed == 0 {
+				delay := rateLimitBackoff(msg)
+				slog.Info("rate limited, deferring message",
+					"domain", domain,
+					"url", rawURL,
+					"delay_seconds", delay,
+					"message_id", *msg.MessageId,
+					"worker_id", workerID,
+				)
+				changeVisibility(ctx, sqsClient, queueURL, msg, delay)
+				return
+			}
+		}
+	}
 
-	resp, err := httpClient.Get(url)
+	slog.Info("fetching", "url", rawURL, "message_id", *msg.MessageId, "worker_id", workerID)
+
+	resp, err := httpClient.Get(rawURL)
 	if err != nil {
-		slog.Error("fetch failed", "url", url, "error", err)
+		slog.Error("fetch failed", "url", rawURL, "error", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Info("skipping non-2xx response",
-			"url", url,
+			"url", rawURL,
 			"status", resp.StatusCode,
 			"message_id", *msg.MessageId,
 			"worker_id", workerID,
@@ -157,7 +215,7 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 	contentType := resp.Header.Get("Content-Type")
 	if !strings.HasPrefix(contentType, "text/html") {
 		slog.Info("skipping non-html content type",
-			"url", url,
+			"url", rawURL,
 			"content_type", contentType,
 			"message_id", *msg.MessageId,
 			"worker_id", workerID,
@@ -168,12 +226,12 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 	if err != nil {
-		slog.Error("failed to read response body", "url", url, "error", err)
+		slog.Error("failed to read response body", "url", rawURL, "error", err)
 		return
 	}
 	if len(body) > maxBodySize {
 		slog.Info("skipping oversized response",
-			"url", url,
+			"url", rawURL,
 			"size", len(body),
 			"message_id", *msg.MessageId,
 			"worker_id", workerID,
@@ -182,7 +240,7 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 		return
 	}
 
-	hash := sha256.Sum256([]byte(url))
+	hash := sha256.Sum256([]byte(rawURL))
 	s3Key := "html/" + hex.EncodeToString(hash[:]) + ".html"
 
 	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
@@ -192,7 +250,7 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 		ContentType: &contentType,
 	})
 	if err != nil {
-		slog.Error("s3 upload failed", "url", url, "s3_key", s3Key, "error", err)
+		slog.Error("s3 upload failed", "url", rawURL, "s3_key", s3Key, "error", err)
 		return
 	}
 
@@ -200,11 +258,11 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 		URL   string `json:"url"`
 		S3Key string `json:"s3_key"`
 	}{
-		URL:   url,
+		URL:   rawURL,
 		S3Key: s3Key,
 	})
 	if err != nil {
-		slog.Error("failed to marshal parser message", "url", url, "error", err)
+		slog.Error("failed to marshal parser message", "url", rawURL, "error", err)
 		return
 	}
 	parserMsgStr := string(parserMsg)
@@ -213,12 +271,12 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, s3Client *s3.Cli
 		MessageBody: &parserMsgStr,
 	})
 	if err != nil {
-		slog.Error("failed to send parser message", "url", url, "error", err)
+		slog.Error("failed to send parser message", "url", rawURL, "error", err)
 		return
 	}
 
 	slog.Info("processed",
-		"url", url,
+		"url", rawURL,
 		"s3_key", s3Key,
 		"status", resp.StatusCode,
 		"content_length", len(body),
@@ -236,5 +294,46 @@ func deleteMessage(ctx context.Context, sqsClient *sqs.Client, queueURL string, 
 	})
 	if err != nil {
 		slog.Error("failed to delete message", "message_id", *msg.MessageId, "error", err)
+	}
+}
+
+func extractDomain(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("empty hostname in URL: %s", rawURL)
+	}
+	return strings.ToLower(host), nil
+}
+
+func rateLimitBackoff(msg types.Message) int32 {
+	const (
+		baseDelay = 30  // seconds
+		maxDelay  = 300 // 5 minutes
+	)
+	receiveCount := 1
+	if v, ok := msg.Attributes["ApproximateReceiveCount"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			receiveCount = n
+		}
+	}
+	delay := float64(baseDelay) * math.Pow(2, float64(receiveCount-1))
+	if delay > float64(maxDelay) {
+		delay = float64(maxDelay)
+	}
+	return int32(delay)
+}
+
+func changeVisibility(ctx context.Context, sqsClient *sqs.Client, queueURL string, msg types.Message, delaySec int32) {
+	_, err := sqsClient.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+		QueueUrl:          &queueURL,
+		ReceiptHandle:     msg.ReceiptHandle,
+		VisibilityTimeout: delaySec,
+	})
+	if err != nil {
+		slog.Error("failed to change message visibility", "message_id", *msg.MessageId, "delay_seconds", delaySec, "error", err)
 	}
 }

@@ -31,10 +31,11 @@ Parameters:
 
   MaxReceiveCount:
     Type: Number
-    Default: 3
+    Default: 6
     Description: >
       Number of times a message can be received from the URL queue
-      before being sent to the dead-letter queue.
+      before being sent to the dead-letter queue. Set higher than
+      default to accommodate rate-limit retries.
 
   MessageRetentionPeriod:
     Type: Number
@@ -462,6 +463,7 @@ Resources:
                   - sqs:ReceiveMessage
                   - sqs:DeleteMessage
                   - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
                 Resource: !GetAtt URLQueue.Arn
               - Effect: Allow
                 Action:
@@ -574,6 +576,10 @@ Resources:
               Value: !Ref HTMLStorageBucket
             - Name: WORKER_COUNT
               Value: !Sub "${CrawlerWorkerCount}"
+            - Name: REDIS_ENDPOINT
+              Value: !Sub "${RedisCluster.RedisEndpoint.Address}:${RedisCluster.RedisEndpoint.Port}"
+            - Name: RATE_LIMIT_PER_SECOND
+              Value: "1"
           LogConfiguration:
             LogDriver: awslogs
             Options:
