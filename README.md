@@ -28,25 +28,12 @@ cmd/seed/       seed URL loader
 infra/          CloudFormation templates
 ```
 
-## Build
-
+## Build and run
 ```
-go build ./cmd/crawler
-go build ./cmd/parser
-go build ./cmd/seed
-```
-
-## Run
-
-```sh
-# crawler
-QUEUE_URL=<url-queue> PARSER_QUEUE_URL=<parser-queue> S3_BUCKET=<bucket> ./crawler
-
-# parser
-PARSER_QUEUE_URL=<parser-queue> S3_BUCKET=<bucket> ./parser
-
-# seed
-QUEUE_URL=<url-queue> ./seed urls.txt
+make build      # compile all binaries to bin/
+make crawler    # build and run the crawler
+make parser     # build and run the parser
+make seed       # build and run the seed loader
 ```
 
 Optional crawler env vars: `WORKER_COUNT` (default 10), `REDIS_ENDPOINT`, `RATE_LIMIT_PER_SECOND` (default 1).
@@ -54,9 +41,6 @@ Optional crawler env vars: `WORKER_COUNT` (default 10), `REDIS_ENDPOINT`, `RATE_
 ## Deploy
 
 ```sh
-aws cloudformation deploy \
-  --template-file infra/cloudformation.yaml \
-  --stack-name orbweaver \
-  --parameter-overrides Environment=dev \
-  --capabilities CAPABILITY_NAMED_IAM
+make deploy             # deploy with ENV=dev (default)
+make docker-push        # build and push docker image out for crawler/parser
 ```
