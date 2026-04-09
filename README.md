@@ -1,6 +1,6 @@
 # Orbweaver
 
-Distributed web crawler built with Go and AWS.
+Distributed web crawler built with Go deployed on AWS.
 
 ## Overview
 
